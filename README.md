@@ -1,2 +1,293 @@
+--[[
+    ============================================================
+        VIP PANEL - SERVER CORE V1 (FIXED & EXPANDED)
+        ROUBE UM OVO MODED
+    ============================================================
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+---------------------------------------------------------------
+-- CONFIG
+---------------------------------------------------------------
+
+local PANEL_NAME = "ROUBE UM OVO MODED"
+local PANEL_VERSION = "1.0.0"
+
+---------------------------------------------------------------
+-- GAME DETECTION & ADAPTERS
+---------------------------------------------------------------
+
+local SUPPORTED_GAMES = {
+	[123456789] = {
+		Name = "Roube um Ovo Moded",
+		Adapter = "Game1",
+	},
+	[987654321] = {
+		Name = "Meu Segundo Jogo",
+		Adapter = "Game2",
+	},
+	[555555555] = {
+		Name = "Meu Terceiro Jogo",
+		Adapter = "Game3",
+	},
+}
+
+local CurrentGame = SUPPORTED_GAMES[game.PlaceId] or {
+	Name = "Jogo não configurado",
+	Adapter = "None",
+}
+
+-- Módulos de adaptadores dos jogos
+local LoadedAdapters = {}
+
+local function GetAdapter(adapterName)
+	if LoadedAdapters[adapterName] then
+		return LoadedAdapters[adapterName]
+	end
+
+	local adapterModule = script:FindFirstChild("Adapters") and script.Adapters:FindFirstChild(adapterName)
+	if adapterModule and adapterModule:IsA("ModuleScript") then
+		local success, adapter = pcall(require, adapterModule)
+		if success then
+			LoadedAdapters[adapterName] = adapter
+			return adapter
+		end
+	end
+
+	return nil
+end
+
+---------------------------------------------------------------
+-- ACCESS LEVELS
+---------------------------------------------------------------
+
+local ACCESS_LEVELS = {
+	FREE = 0,
+	VIP = 1,
+	PREMIUM = 2,
+	ADMIN = 3,
+	OWNER = 4,
+}
+
+---------------------------------------------------------------
+-- KEYS (TESTE)
+---------------------------------------------------------------
+
+local KEYS = {
+	["VIP-DEMO-2026"] = "VIP",
+	["PREMIUM-DEMO-2026"] = "PREMIUM",
+	["ADMIN-DEMO-2026"] = "ADMIN",
+	["OWNER-DEMO-2026"] = "OWNER",
+}
+
+---------------------------------------------------------------
+-- SESSIONS & RATE LIMIT
+---------------------------------------------------------------
+
+local Sessions = {}
+local RateLimits = {}
+
+local function RateLimit(player, action, cooldown)
+	cooldown = cooldown or 1
+	RateLimits[player] = RateLimits[player] or {}
+
+	local now = os.clock()
+	local last = RateLimits[player][action]
+
+	if last and now - last < cooldown then
+		return false
+	end
+
+	RateLimits[player][action] = now
+	return true
+end
+
+---------------------------------------------------------------
+-- REMOTES SETUP
+---------------------------------------------------------------
+
+local Root = ReplicatedStorage:FindFirstChild("VIPPanel") or Instance.new("Folder")
+Root.Name = "VIPPanel"
+Root.Parent = ReplicatedStorage
+
+local Remotes = Root:FindFirstChild("Remotes") or Instance.new("Folder")
+Remotes.Name = "Remotes"
+Remotes.Parent = Root
+
+local function GetRemoteFunction(name)
+	local remote = Remotes:FindFirstChild(name) or Instance.new("RemoteFunction")
+	remote.Name = name
+	remote.Parent = Remotes
+	return remote
+end
+
+local function GetRemoteEvent(name)
+	local remote = Remotes:FindFirstChild(name) or Instance.new("RemoteEvent")
+	remote.Name = name
+	remote.Parent = Remotes
+	return remote
+end
+
+local Authentication = GetRemoteFunction("Authentication")
+local PanelRequest = GetRemoteFunction("PanelRequest")
+local Notification = GetRemoteEvent("Notification")
+
+---------------------------------------------------------------
+-- PERMISSION CHECK
+---------------------------------------------------------------
+
+local function HasAccess(player, required)
+	local session = Sessions[player]
+	if not session then return false end
+
+	local current = ACCESS_LEVELS[session.AccessLevel] or 0
+	local needed = ACCESS_LEVELS[required] or 0
+
+	return current >= needed
+end
+
+---------------------------------------------------------------
+-- KEY VALIDATION
+---------------------------------------------------------------
+
+local function ValidateKey(player, key)
+	if typeof(key) ~= "string" or #key < 3 or #key > 100 then
+		return false, "KEY inválida."
+	end
+
+	key = key:gsub("%s+", "")
+	local access = KEYS[key]
+
+	if not access then
+		return false, "KEY incorreta."
+	end
+
+	Sessions[player] = {
+		AccessLevel = access,
+		AuthenticatedAt = os.time(),
+		Game = CurrentGame.Adapter,
+	}
+
+	return true, access
+end
+
+---------------------------------------------------------------
+-- AUTHENTICATION HANDLER
+---------------------------------------------------------------
+
+Authentication.OnServerInvoke = function(player, action, data)
+	if not RateLimit(player, "Authentication", 0.75) then
+		return { Success = false, Message = "Aguarde um momento." }
+	end
+
+	if action == "ValidateKey" then
+		local success, result = ValidateKey(player, data)
+		if success then
+			return {
+				Success = true,
+				AccessLevel = result,
+				Game = CurrentGame.Name,
+				Adapter = CurrentGame.Adapter,
+			}
+		end
+		return { Success = false, Message = result }
+	end
+
+	if action == "GetSession" then
+		local session = Sessions[player]
+		if not session then
+			return { Success = false }
+		end
+
+		return {
+			Success = true,
+			AccessLevel = session.AccessLevel,
+			Game = CurrentGame.Name,
+			Adapter = CurrentGame.Adapter,
+		}
+	end
+
+	return { Success = false, Message = "Ação desconhecida." }
+end
+
+---------------------------------------------------------------
+-- PANEL REQUEST HANDLER
+---------------------------------------------------------------
+
+PanelRequest.OnServerInvoke = function(player, action, data)
+	if not RateLimit(player, action, 0.15) then
+		return { Success = false, Message = "Aguarde para enviar outra requisição." }
+	end
+
+	local session = Sessions[player]
+	if not session then
+		return { Success = false, Message = "Painel não autenticado." }
+	end
+
+	if action == "GetGameInfo" then
+		return {
+			Success = true,
+			PlaceId = game.PlaceId,
+			GameName = CurrentGame.Name,
+			Adapter = CurrentGame.Adapter,
+		}
+	end
+
+	if action == "GetStatus" then
+		return {
+			Success = true,
+			Status = "ONLINE",
+			AccessLevel = session.AccessLevel,
+			GameName = CurrentGame.Name,
+			PlaceId = game.PlaceId,
+			Version = PANEL_VERSION,
+			SessionStarted = session.AuthenticatedAt,
+		}
+	end
+
+	-- Execução de funções dos jogos (Auto-Farm, Eggs, etc.)
+	if action == "ExecuteFeature" then
+		if not HasAccess(player, "VIP") then
+			return { Success = false, Message = "Nível de acesso insuficiente." }
+		end
+
+		local adapter = GetAdapter(CurrentGame.Adapter)
+		if not adapter then
+			return { Success = false, Message = "Adaptador de jogo não configurado no servidor." }
+		end
+
+		-- Encaminha a solicitação para o módulo de jogo específico
+		local success, response = pcall(function()
+			return adapter.ProcessAction(player, session.AccessLevel, data)
+		end)
+
+		if success and response then
+			return response
+		else
+			return { Success = false, Message = "Erro ao processar ação no jogo." }
+		end
+	end
+
+	return { Success = false, Message = "Ação desconhecida." }
+end
+
+---------------------------------------------------------------
+-- CLEANUP
+---------------------------------------------------------------
+
+Players.PlayerRemoving:Connect(function(player)
+	Sessions[player] = nil
+	RateLimits[player] = nil
+end)
+
+print("======================================")
+print(PANEL_NAME .. " SERVER")
+print("Version:", PANEL_VERSION)
+print("Game:", CurrentGame.Name)
+print("Adapter:", CurrentGame.Adapter)
+print("PlaceId:", game.PlaceId)
+print("======================================")
 # SCRIPT-HUB
 ROUBE UM OVO
